@@ -17,6 +17,8 @@ should work fine.
 - H6022: Customisable DIY effects (simple mode) - breathe, dream, graffiti, fire, etc.
 - H6022: Sound-reactive effects for supported models, including music visualiser modes
 - H6022: Custom matrix scenes (animated, layers)
+- H60A1: Experimental rear RGBIC actions for all 13 segments or selected groups
+- H60A1: Full offline Govee scene library (79 variants) and a ceiling scene/editor card
 
 ## Install
 
@@ -71,6 +73,102 @@ Scene effects are available through the light entity's effect dropdown, grouped 
 | `SG:` | Built-in animated effects from the simple scene generator (see below) |
 | `Music:` | Sound-reactive/music visualiser modes |
 | `Matrix:` | Custom multi-layer animated scenes you've designed |
+
+## H60A1 rear RGBIC backlight
+
+The regular H60A1 ceiling light exposes **13 rear RGBIC segments**. Use the
+following actions on its **Govee LAN** light entity. They send model-scoped
+`ptReal` segment commands without global power, brightness, or color commands.
+Turn the device on first with the normal light control.
+
+Set the whole rear ring to one color:
+
+```yaml
+action: govee_lan.set_backlight
+target:
+  entity_id: light.ceiling_light
+data:
+  color: [255, 110, 84]
+```
+
+Use `color: [0, 0, 0]` to request black on the rear ring. Set selected segments
+to different colors with a single action:
+
+```yaml
+action: govee_lan.set_segment_colors
+target:
+  entity_id: light.ceiling_light
+data:
+  groups:
+    - segments: [1, 2, 3]
+      color: [255, 0, 0]
+    - segments: [12, 13]
+      color: [0, 0, 255]
+```
+
+Segment numbers are **1 through 13**. Unlisted segments are not addressed.
+Each segment may appear only once per action; invalid input fails before
+sending. These actions reject H6022 and other models.
+
+This support is **experimental and has not been tested on physical hardware**.
+The encoding matches an existing LAN implementation, but firmware may couple
+front and rear modes. Independent front-panel preservation, black-as-off,
+segment orientation, and multi-color application need device testing. Basic
+LAN status does not report individual segment state. Rear brightness and rear
+white-temperature controls are not exposed.
+
+The H60A1 effect dropdown now includes its full native Govee catalog: **79
+variants**, including Rainbow, Forest, Aurora, Fire, Wave, Christmas, Halloween,
+Dreamlike, and the seven original firmware presets. Everything is bundled for
+offline use, including the parameter uploads needed by animated scenes. These
+are whole-device presets and may affect both outputs.
+
+Govee supplies different scene catalogs for H6022 and H60A1. Shared scenes use
+H60A1's own codes and parameters. H6022-only scenes, including its SG/music and
+matrix formats, cannot be copied directly to H60A1.
+
+### H60A1 scene selector and editor card
+
+The bundled **Govee Ceiling Scenes** card (`custom:govee-backlight-card`) includes:
+
+- A selector and Activate button for all 79 native Govee scene variants.
+- A numbered ring preview with individual color pickers for segments 1–13.
+- Fill all, Rainbow, and Black tools for static rear colors.
+- Save, load for editing, apply, and delete controls for named custom rear scenes.
+
+```yaml
+type: custom:govee-backlight-card
+entity: light.ceiling_light
+show_title: true
+```
+
+The card appears in the dashboard card picker after installing/reloading the
+integration and refreshing the browser. It uses the same bundled resource as
+the existing H6022 cards; the integration updates its cache version automatically.
+For YAML Lovelace resources, register it manually:
+
+```yaml
+resources:
+  - url: /govee_lan/govee-scene-card.js?v=0.1.4
+    type: module
+```
+
+Custom rear scenes are stored in Home Assistant and shared by all H60A1 lights.
+They also appear in each H60A1 light's effect list as `Backlight: <name>`. Saving
+an existing name replaces that preset. Saving or deleting does not send a light
+command. Applying rear colors from the card sends no global power command;
+selecting a saved effect through `light.turn_on` uses normal whole-device power-on.
+The editor creates **static rear scenes**; animated Govee presets are selected
+from the preset picker. It does not modify the preset's internal animation.
+
+The matching automation actions are `govee_lan.save_backlight_scene` (name and
+13 ordered RGB colors), `govee_lan.set_backlight_scene` (name), and
+`govee_lan.delete_backlight_scene` (name). Existing H6022 cards remain available.
+
+If the native **Govee lights local** integration already controls this lamp,
+these actions still need a light from this custom integration. Avoid competing
+UDP 4002 listeners, or use manual setup with “Skip connection test” as described
+above. See [protocol evidence, test instructions, and device acceptance steps](docs/h60a1-protocol.md).
 
 ## Simple scene generator
 
@@ -174,9 +272,10 @@ available to choose as an effect.
 ## Notes
 
 Scene names are loaded from Govee's public scene metadata endpoint, then cached
-in Home Assistant storage per SKU for all supported devices except H6022.
+in Home Assistant storage per SKU for devices other than H6022 and H60A1.
 
 H6022 always uses a local copy that has a few fixes and additional scenes included.
+H60A1 uses a local snapshot of its complete 79-variant native scene library.
 
 ## Sources
 

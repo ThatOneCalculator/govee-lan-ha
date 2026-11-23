@@ -20,6 +20,7 @@ from .govee_scene import (
 )
 
 from .scenes import BUILTIN_SCENES
+from .segments import BACKLIGHT_SEGMENT_COUNTS, segment_color_packets
 
 MULTICAST_ADDR = "239.255.255.250"
 SCAN_PORT = 4001
@@ -137,6 +138,20 @@ class GoveeLanClient:
             return resp.get("msg", {}).get("data")
         return None
 
+    def set_segment_colors(self, groups: list[dict]) -> None:
+        """Set selected rear RGBIC segments without issuing global commands."""
+        commands = segment_color_packets(self.sku, groups)
+        self._send({"msg": {"cmd": "ptReal", "data": {"command": commands}}})
+
+    def set_backlight(self, color: tuple[int, int, int]) -> None:
+        """Request one RGB color on all rear segments (black for rear off)."""
+        count = BACKLIGHT_SEGMENT_COUNTS.get(self.sku)
+        if count is None:
+            raise GoveeLanError(f"Backlight control is not supported for SKU {self.sku}")
+        self.set_segment_colors(
+            [{"segments": list(range(1, count + 1)), "color": color}]
+        )
+
     def rediscover(self) -> bool:
         """Update host from LAN discovery using the stable device ID."""
         if not self.device_id:
@@ -168,7 +183,11 @@ class GoveeLanClient:
             for scene in cat.get("scenes", []):
                 for effect in scene.get("lightEffects", []):
                     code = effect.get("sceneCode", 0)
-                    param = effect.get("diyEffectStr") or effect.get("sceneParam", "")
+                    param = (
+                        effect.get("diyEffectStr")
+                        or effect.get("sceneParam")
+                        or effect.get("scenceParam", "")
+                    )
                     if code:
                         scenes.append(
                             {

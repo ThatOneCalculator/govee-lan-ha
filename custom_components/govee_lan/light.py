@@ -22,6 +22,7 @@ from homeassistant.components.light import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.entity_platform import (
@@ -31,6 +32,7 @@ from homeassistant.helpers.entity_platform import (
 from homeassistant.helpers.storage import Store
 
 from .api import GoveeLanClient
+from .backlight_scenes import BACKLIGHT_EFFECT_PREFIX, BacklightSceneStore
 from .const import (
     CONF_POLL_STATUS,
     CONF_SKU,
@@ -48,7 +50,9 @@ from .const import (
     MODEL_ICONS,
     SIMPLE_SCENE_DEFAULT_COLORS,
 )
+from .govee_scene import GoveeLanError
 from .scenes import BUILTIN_SCENES
+from .segments import BACKLIGHT_SEGMENT_COUNTS, backlight_scene_groups
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
@@ -104,6 +108,17 @@ MATRIX_SCENE_PRESETS_CACHE_VERSION = 1
 MATRIX_SCENE_PRESETS_CACHE_KEY = f"{DOMAIN}_matrix_scene_presets"
 MATRIX_LIGHTS_DATA_KEY = "matrix_lights"
 MATRIX_EFFECT_PREFIX = "Matrix: "
+_SEGMENT_RGB_SCHEMA = vol.ExactSequence([vol.All(int, vol.Range(0, 255))] * 3)
+_SEGMENT_GROUP_SCHEMA = vol.Schema(
+    {
+        vol.Required("color"): _SEGMENT_RGB_SCHEMA,
+        vol.Required("segments"): vol.All(
+            cv.ensure_list,
+            [vol.All(int, vol.Range(1, 13))],
+            vol.Length(min=1, max=13),
+        ),
+    }
+)
 _MATRIX_GROUP_SCHEMA = vol.Schema(
     {
         vol.Required("color"): vol.ExactSequence(
@@ -216,6 +231,40 @@ async def async_setup_entry(
 
     platform = async_get_current_platform()
     platform.async_register_entity_service(
+        "set_backlight",
+        {vol.Required("color"): _SEGMENT_RGB_SCHEMA},
+        "async_set_backlight",
+    )
+    platform.async_register_entity_service(
+        "set_segment_colors",
+        {
+            vol.Required("groups"): vol.All(
+                cv.ensure_list, [_SEGMENT_GROUP_SCHEMA], vol.Length(min=1, max=13)
+            )
+        },
+        "async_set_segment_colors",
+    )
+    platform.async_register_entity_service(
+        "save_backlight_scene",
+        {
+            vol.Required("name"): cv.string,
+            vol.Required("colors"): vol.All(
+                [_SEGMENT_RGB_SCHEMA], vol.Length(min=13, max=13)
+            ),
+        },
+        "async_save_backlight_scene",
+    )
+    platform.async_register_entity_service(
+        "delete_backlight_scene",
+        {vol.Required("name"): cv.string},
+        "async_delete_backlight_scene",
+    )
+    platform.async_register_entity_service(
+        "set_backlight_scene",
+        {vol.Required("name"): cv.string},
+        "async_set_backlight_scene",
+    )
+    platform.async_register_entity_service(
         "set_simple_scene",
         {
             vol.Required("scene"): cv.string,
@@ -284,6 +333,7 @@ class GoveeLanLight(LightEntity):
         self._sg_scene_options: dict[str, dict[str, Any]] = {}
         self._sg_supported: bool = False
         self._matrix_scene_presets: dict[str, dict[str, Any]] = {}
+        self._backlight_scene_presets: dict[str, dict[str, Any]] = {}
         self._attr_is_on = False
         self._attr_brightness = None
         self._attr_rgb_color = None
@@ -295,6 +345,9 @@ class GoveeLanLight(LightEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose saved matrix preset data for the Lovelace editor."""
         attrs: dict[str, Any] = {}
+        if count := BACKLIGHT_SEGMENT_COUNTS.get(self._client.sku):
+            attrs["backlight_segment_count"] = count
+            attrs["backlight_scene_presets"] = self._backlight_scene_presets
         if self._matrix_scene_presets:
             attrs["matrix_scene_presets"] = self._matrix_scene_presets
         return attrs
@@ -328,6 +381,8 @@ class GoveeLanLight(LightEntity):
         if self._client.sku.upper() == "H6022":
             self._matrix_scene_presets = await self._async_load_matrix_scene_presets()
             self._refresh_matrix_effects()
+        if self._client.sku == "H60A1":
+            await self._async_refresh_backlight_presets()
         self.async_write_ha_state()
 
     async def _async_load_scenes(self) -> list[dict]:
@@ -681,6 +736,7 @@ class GoveeLanLight(LightEntity):
                 effect in self._sg_scenes
                 or effect in MUSIC_MODES
                 or self._matrix_scene_preset_name(effect) is not None
+                or effect in self._backlight_effect_names()
                 or self._scenes_by_name.get(effect) is not None
             ):
                 self._attr_effect = effect
@@ -721,6 +777,8 @@ class GoveeLanLight(LightEntity):
                     MUSIC_MODES[effect],
                     MUSIC_MODE_DEFAULT_SENSITIVITY,
                 )
+            elif effect in self._backlight_effect_names():
+                await self.async_set_backlight_scene(effect.removeprefix(BACKLIGHT_EFFECT_PREFIX))
             elif (preset_name := self._matrix_scene_preset_name(effect)) is not None:
                 preset = self._matrix_scene_presets.get(preset_name)
                 if preset is not None:
@@ -887,6 +945,86 @@ class GoveeLanLight(LightEntity):
         self._attr_is_on = False
         self.async_write_ha_state()
         await self._async_call_client("turn", False)
+        self.async_write_ha_state()
+
+    async def _async_backlight_command(self, method: str, value: Any) -> None:
+        """Send a model-scoped action without guessing global state or powering on.
+
+        LAN status has no rear-segment readback. A successful UDP send does not
+        confirm that firmware applied the command. Surface send/validation errors
+        to automations instead of treating an unsuccessful action as success.
+        """
+        try:
+            await self.hass.async_add_executor_job(getattr(self._client, method), value)
+        except (GoveeLanError, OSError) as err:
+            raise HomeAssistantError(str(err)) from err
+        self._attr_effect = None
+        self.async_write_ha_state()
+
+    async def async_set_backlight(self, color: list[int]) -> None:
+        """Request one color on all H60A1 rear segments, including black for off."""
+        await self._async_backlight_command("set_backlight", tuple(color))
+
+    async def async_set_segment_colors(self, groups: list[dict]) -> None:
+        """Set selected H60A1 rear segments, preserving unaddressed mask bits."""
+        await self._async_backlight_command("set_segment_colors", groups)
+
+    def _backlight_effect_names(self) -> list[str]:
+        return [BACKLIGHT_EFFECT_PREFIX + name for name in sorted(self._backlight_scene_presets)]
+
+    def _backlight_store(self) -> BacklightSceneStore:
+        if self._client.sku != "H60A1":
+            raise HomeAssistantError("Backlight scenes are supported only on H60A1")
+        data = self.hass.data.setdefault(DOMAIN, {})
+        if "backlight_scene_store" not in data:
+            data["backlight_scene_store"] = BacklightSceneStore(self.hass)
+        return data["backlight_scene_store"]
+
+    async def _async_refresh_backlight_presets(self) -> None:
+        self._backlight_scene_presets = await self._backlight_store().async_load()
+        self._attr_effect_list = [
+            effect for effect in (self._attr_effect_list or [])
+            if not effect.startswith(BACKLIGHT_EFFECT_PREFIX)
+        ] + self._backlight_effect_names()
+        if (
+            self._attr_effect
+            and self._attr_effect.startswith(BACKLIGHT_EFFECT_PREFIX)
+            and self._attr_effect not in self._backlight_effect_names()
+        ):
+            self._attr_effect = None
+        self.async_write_ha_state()
+
+    async def _async_notify_backlight_presets(self) -> None:
+        lights = self.hass.data.get(DOMAIN, {}).get(MATRIX_LIGHTS_DATA_KEY, set())
+        for light in lights | {self}:
+            if light._client.sku == "H60A1":
+                await light._async_refresh_backlight_presets()
+
+    async def async_save_backlight_scene(self, name: str, colors: list) -> None:
+        """Persist a complete rear-color scene and expose it as an effect."""
+        try:
+            await self._backlight_store().async_save(name, colors)
+        except (GoveeLanError, OSError) as err:
+            raise HomeAssistantError(str(err)) from err
+        await self._async_notify_backlight_presets()
+
+    async def async_delete_backlight_scene(self, name: str) -> None:
+        """Delete a shared rear-color scene without changing the physical light."""
+        try:
+            await self._backlight_store().async_delete(name)
+        except (GoveeLanError, OSError) as err:
+            raise HomeAssistantError(str(err)) from err
+        await self._async_notify_backlight_presets()
+
+    async def async_set_backlight_scene(self, name: str) -> None:
+        """Apply a saved rear-color scene without issuing global power commands."""
+        self._backlight_store()  # Enforce the model guard before loading any data.
+        await self._async_refresh_backlight_presets()
+        preset = self._backlight_scene_presets.get(name)
+        if preset is None:
+            raise HomeAssistantError(f"No backlight scene named '{name}'")
+        await self.async_set_segment_colors(backlight_scene_groups(preset["colors"]))
+        self._attr_effect = BACKLIGHT_EFFECT_PREFIX + name
         self.async_write_ha_state()
 
 

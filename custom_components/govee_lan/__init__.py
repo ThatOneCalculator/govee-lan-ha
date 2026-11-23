@@ -16,7 +16,7 @@ _LOGGER = logging.getLogger(__name__)
 
 SCENE_CARD_FILENAME = "govee-scene-card.js"
 SCENE_CARD_URL_BASE = f"/{DOMAIN}"
-SCENE_CARD_RESOURCE_URL = f"{SCENE_CARD_URL_BASE}/{SCENE_CARD_FILENAME}"
+SCENE_CARD_RESOURCE_URL = f"{SCENE_CARD_URL_BASE}/{SCENE_CARD_FILENAME}?v=0.1.4"
 
 
 async def async_setup_entry(
@@ -80,7 +80,7 @@ async def _async_register_scene_card(hass: HomeAssistant) -> None:
             continue
 
         if (
-            resource_url != SCENE_CARD_RESOURCE_URL
+            item["url"] != SCENE_CARD_RESOURCE_URL
             and hasattr(resources, "async_update_item")
         ):
             await resources.async_update_item(

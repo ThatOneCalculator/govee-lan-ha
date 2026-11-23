@@ -2312,3 +2312,258 @@ window.customCards.push({
   description: "Paint H6022 12x11 matrix pixels",
   preview: true,
 });
+
+// H60A1 uses a numbered 13-segment rear ring, not the H6022 matrix grammar.
+const BACKLIGHT_PREFIX = "Backlight: ";
+const BACKLIGHT_RAINBOW = [
+  "#ff0000", "#ff6600", "#ffbb00", "#ffff00", "#99ff00", "#00ff33", "#00ffbb",
+  "#00ddff", "#0066ff", "#3300ff", "#9900ff", "#ff00ee", "#ff0077",
+];
+
+function backlightGroups(colors) {
+  if (!Array.isArray(colors) || colors.length !== 13 || !colors.every(isHexColor)) {
+    throw new Error("Choose a valid color for each of the 13 segments");
+  }
+  const groups = new Map();
+  colors.forEach((color, i) => {
+    const key = color.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { color: hexToRgb(key), segments: [] });
+    groups.get(key).segments.push(i + 1);
+  });
+  return [...groups.values()];
+}
+
+class GoveeBacklightCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+  setConfig(config) { this._config = config; this._render(); }
+  set hass(hass) { this._hass = hass; this._render(); }
+  _render() {
+    let form = this.shadowRoot.querySelector("ha-form");
+    if (!form) {
+      form = document.createElement("ha-form");
+      form.addEventListener("value-changed", (event) => {
+        this._config = event.detail.value;
+        this.dispatchEvent(new CustomEvent("config-changed", {
+          detail: { config: this._config }, bubbles: true, composed: true,
+        }));
+      });
+      this.shadowRoot.append(form);
+    }
+    form.hass = this._hass;
+    form.data = this._config || {};
+    form.schema = [
+      { name: "entity", required: true, selector: { entity: { domain: "light", integration: "govee_lan" } } },
+      { name: "show_title", selector: { boolean: {} } },
+    ];
+    form.computeLabel = (field) => EDITOR_LABELS[field.name] || field.name;
+  }
+}
+customElements.define("govee-backlight-card-editor", GoveeBacklightCardEditor);
+
+class GoveeBacklightCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._colors = [...BACKLIGHT_RAINBOW];
+    this._busy = false;
+    this._config = {};
+  }
+  static getConfigElement() { return document.createElement("govee-backlight-card-editor"); }
+  static getStubConfig(hass) {
+    return { entity: Object.keys(hass?.states || {}).find((id) =>
+      id.startsWith("light.") && hass.states[id].attributes.backlight_segment_count === 13
+    ) || "", show_title: true };
+  }
+  getCardSize() { return 9; }
+  setConfig(config) {
+    if (typeof config.entity !== "string" || !config.entity.startsWith("light.")) {
+      throw new Error("govee-backlight-card: a Govee LAN H60A1 light entity is required");
+    }
+    if (this._config.entity !== config.entity) this._colors = [...BACKLIGHT_RAINBOW];
+    this._config = { ...config };
+    this._build();
+    this._refresh();
+  }
+  set hass(hass) { this._hass = hass; this._refresh(); }
+  _state() { return this._hass?.states[this._config.entity]; }
+  _usable() {
+    const state = this._state();
+    return state?.attributes?.backlight_segment_count === 13 &&
+      !["unavailable", "unknown"].includes(state.state);
+  }
+  _build() {
+    this.shadowRoot.innerHTML = `<style>${CSS}
+      .content { padding: 16px; display: grid; gap: 16px; }
+      .section { display: grid; gap: 8px; }
+      label { font-size: 13px; color: var(--secondary-text-color); }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .row select { flex: 1; min-width: 130px; }
+      button { padding: 9px 12px; border: 1px solid var(--divider-color, #888);
+        border-radius: 8px; background: var(--secondary-background-color, #eee);
+        color: var(--primary-text-color, #222); cursor: pointer; font: inherit; }
+      button:disabled, input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
+      .primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, white); border-color: transparent; }
+      input[type=text] { width: 100%; box-sizing: border-box; padding: 10px;
+        border-radius: 8px; border: 1px solid var(--divider-color, #888);
+        background: var(--secondary-background-color, #eee); color: var(--primary-text-color, #222); font: inherit; }
+      input[type=color] { width: 44px; height: 34px; padding: 2px; border: 0; cursor: pointer; }
+      .ring { display: block; width: min(100%, 260px); margin: auto; }
+      .ring text { fill: var(--primary-text-color, #222); font-size: 10px; }
+      .ring path { stroke: var(--card-background-color, white); stroke-width: 2px; }
+      .segments { display: grid; grid-template-columns: repeat(auto-fit, minmax(46px, 1fr)); gap: 8px; }
+      .segment { display: grid; justify-items: center; gap: 4px; }
+      .note, .status { font-size: 12px; color: var(--secondary-text-color); line-height: 1.5; margin: 0; }
+      .status.error { color: var(--error-color, #db4437); }
+    </style><ha-card><div class="content">
+      <div class="section"><label for="preset">Govee preset scene</label>
+        <div class="row"><select id="preset" aria-label="Govee preset scene"></select>
+          <button id="activate" class="primary">Activate</button></div>
+        <p class="note">Built-in scenes can change both front and rear lights.</p>
+      </div>
+      <div class="section"><label for="saved">Saved rear scenes</label>
+        <div class="row"><select id="saved" aria-label="Saved rear scenes"></select>
+          <button id="load">Edit</button><button id="apply-saved">Apply</button>
+          <button id="delete">Delete</button></div>
+      </div>
+      <div class="section"><label>Rear segment colors</label>
+        <svg class="ring" viewBox="0 0 200 200" role="img" aria-label="Numbered preview of 13 rear segments"></svg>
+        <p class="note">Numbered preview; physical segment positions may differ.</p>
+        <div class="segments"></div>
+        <div class="row"><label for="fill-color">Fill color</label>
+          <input id="fill-color" type="color" value="#ff6600" aria-label="Fill color">
+          <button id="fill">Fill all</button><button id="rainbow">Rainbow</button>
+          <button id="clear">Black</button></div>
+      </div>
+      <div class="section"><label for="name">Custom scene name</label>
+        <input id="name" type="text" maxlength="80" placeholder="Evening colors">
+        <div class="row"><button id="apply" class="primary">Apply colors</button>
+          <button id="save">Save scene</button><button id="save-apply">Save and apply</button></div>
+      </div>
+      <p class="note">Rear editor uses static colors. Turn the light on first. Saved scenes are shared across H60A1 lights. Segment state cannot be read back.</p>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </div></ha-card>`;
+    const root = this.shadowRoot;
+    if (this._config.show_title !== false) root.querySelector("ha-card").setAttribute("header", "Govee Ceiling Scenes");
+    root.getElementById("activate").onclick = () => this._run(async () => {
+      const effect = root.getElementById("preset").value;
+      if (!effect) throw new Error("Choose a preset scene");
+      await this._hass.callService("light", "turn_on", { entity_id: this._config.entity, effect });
+    }, "Preset sent");
+    root.getElementById("load").onclick = () => {
+      const name = root.getElementById("saved").value;
+      const colors = this._state()?.attributes?.backlight_scene_presets?.[name]?.colors;
+      if (!Array.isArray(colors) || colors.length !== 13 || colors.some((rgb) =>
+        !Array.isArray(rgb) || rgb.length !== 3 || rgb.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
+      )) return this._status("The saved scene has invalid colors", true);
+      this._colors = colors.map((rgb) => "#" + rgb.map((n) => n.toString(16).padStart(2, "0")).join(""));
+      root.getElementById("name").value = name;
+      this._renderColors();
+      this._status("Loaded for editing; no command sent");
+    };
+    root.getElementById("apply-saved").onclick = () => this._run(async () => {
+      await this._call("set_backlight_scene", { name: this._savedName() });
+    }, "Saved scene sent");
+    root.getElementById("delete").onclick = () => this._run(async () => {
+      await this._call("delete_backlight_scene", { name: this._savedName() });
+    }, "Scene deleted");
+    root.getElementById("fill").onclick = () => { this._colors.fill(root.getElementById("fill-color").value); this._renderColors(); };
+    root.getElementById("rainbow").onclick = () => { this._colors = [...BACKLIGHT_RAINBOW]; this._renderColors(); };
+    root.getElementById("clear").onclick = () => { this._colors.fill("#000000"); this._renderColors(); };
+    root.getElementById("apply").onclick = () => this._run(() => this._apply(), "Rear colors sent");
+    root.getElementById("save").onclick = () => this._run(() => this._save(), "Scene saved");
+    root.getElementById("save-apply").onclick = () => this._run(async () => {
+      await this._save();
+      await this._apply();
+    }, "Scene saved and colors sent");
+    this._renderColors();
+  }
+  _savedName() {
+    const name = this.shadowRoot.getElementById("saved").value;
+    if (!name) throw new Error("Choose a saved rear scene");
+    return name;
+  }
+  _call(service, data) { return this._hass.callService("govee_lan", service, { entity_id: this._config.entity, ...data }); }
+  _apply() { return this._call("set_segment_colors", { groups: backlightGroups(this._colors) }); }
+  _save() {
+    const name = this.shadowRoot.getElementById("name").value.trim();
+    if (!name) throw new Error("Enter a custom scene name");
+    backlightGroups(this._colors);
+    return this._call("save_backlight_scene", { name, colors: this._colors.map(hexToRgb) });
+  }
+  _status(message, error = false) {
+    const status = this.shadowRoot.getElementById("status");
+    if (status) { status.textContent = message; status.classList.toggle("error", error); }
+  }
+  async _run(action, message) {
+    if (this._busy || !this._usable()) return;
+    this._busy = true;
+    this._refresh();
+    this._status("Sending…");
+    try { await action(); this._status(message); }
+    catch (error) { this._status(error?.message || "The action failed", true); }
+    finally { this._busy = false; this._refresh(); }
+  }
+  _options(select, names, placeholder) {
+    const signature = JSON.stringify(names);
+    if (select.dataset.options === signature) return;
+    const previous = select.value;
+    select.replaceChildren();
+    const empty = document.createElement("option");
+    empty.value = ""; empty.textContent = placeholder; select.append(empty);
+    names.forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name; option.textContent = name; select.append(option);
+    });
+    select.value = names.includes(previous) ? previous : (names[0] || "");
+    select.dataset.options = signature;
+  }
+  _refresh() {
+    const root = this.shadowRoot;
+    if (!root.getElementById("preset")) return;
+    const state = this._state();
+    const effects = state?.attributes?.effect_list || [];
+    this._options(root.getElementById("preset"), effects.filter((e) => !e.startsWith(BACKLIGHT_PREFIX)), "Choose preset");
+    this._options(root.getElementById("saved"), Object.keys(state?.attributes?.backlight_scene_presets || {}).sort(), "No saved scenes");
+    root.querySelectorAll("button, input, select").forEach((control) => { control.disabled = this._busy || !this._usable(); });
+    const noSaved = !root.getElementById("saved").value;
+    ["load", "apply-saved", "delete"].forEach((id) => { root.getElementById(id).disabled ||= noSaved; });
+    root.getElementById("activate").disabled ||= !root.getElementById("preset").value;
+    const unavailableMessage = "Select an available Govee LAN H60A1 light to use this card.";
+    if (!this._usable()) this._status(unavailableMessage, true);
+    else if (root.getElementById("status").textContent === unavailableMessage) this._status("");
+  }
+  _renderColors() {
+    const root = this.shadowRoot;
+    const grid = root.querySelector(".segments");
+    grid.replaceChildren();
+    this._colors.forEach((color, i) => {
+      const label = document.createElement("label"); label.className = "segment";
+      label.append(document.createTextNode(String(i + 1)));
+      const input = document.createElement("input"); input.type = "color"; input.value = color;
+      input.setAttribute("aria-label", `Segment ${i + 1} color`);
+      input.addEventListener("input", () => { this._colors[i] = input.value; this._renderRing(); });
+      label.append(input); grid.append(label);
+    });
+    this._renderRing();
+  }
+  _renderRing() {
+    const svg = this.shadowRoot.querySelector(".ring");
+    svg.replaceChildren();
+    const point = (r, a) => [100 + r * Math.sin(a), 100 - r * Math.cos(a)];
+    this._colors.forEach((color, i) => {
+      const a = i * 2 * Math.PI / 13, b = (i + 1) * 2 * Math.PI / 13;
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", `M${point(70, a)} A70 70 0 0 1 ${point(70, b)} L${point(45, b)} A45 45 0 0 0 ${point(45, a)} Z`);
+      p.setAttribute("fill", color); svg.append(p);
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      const [x, y] = point(84, (a + b) / 2);
+      text.setAttribute("x", x); text.setAttribute("y", y + 3); text.setAttribute("text-anchor", "middle");
+      text.textContent = String(i + 1); svg.append(text);
+    });
+  }
+}
+customElements.define("govee-backlight-card", GoveeBacklightCard);
+window.customCards.push({ type: "govee-backlight-card", name: "Govee Ceiling Scenes", description: "H60A1 presets and 13-segment rear scene editor", preview: true });

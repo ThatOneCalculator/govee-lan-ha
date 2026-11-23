@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .h60a1_scenes import H60A1_SCENES
+
 BUILTIN_SCENES = {'H6022': [{'category': 'Custom',
             'code': 8505,
             'name': 'Fast Fire',
@@ -381,3 +383,5 @@ BUILTIN_SCENES = {'H6022': [{'category': 'Custom',
             'code': 20905,
             'name': 'ZDP Trio',
             'param': 'QQEBAWQAAyMAAxUAARAAAP8HCBITHR4oKTM0Pj9JSlRVYmQGAAH//wAAAAAwAAMiAAMKiwD/BRARGxwmJzEyPQb/AGFERU9QWlsF/2hJZWZwcXxeZAYAAv//AAAAALMAA6UACBj/aUoAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcM7TSlGBkaGxwdHh8gISIjDGwApSQlJicoKSorLC0uLxgAAP8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkcMQE7KSElKS0xNTk9QUVJTDJk6w1RVVldYWVpbXF1eXxj/O4NgYWJjZGVmZ2hpamtsbW5vcHFyc3R1dncM/0ACeHl6e3x9fn+AgYKDPmQHAAP//wAAAAA='}]}
+
+BUILTIN_SCENES["H60A1"] = H60A1_SCENES

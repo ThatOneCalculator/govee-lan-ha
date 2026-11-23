@@ -1,3 +1,45 @@
+set_backlight:
+  name: Set backlight
+  description: >
+    Experimental H60A1 LAN control. Set all 13 rear RGBIC segments to one
+    RGB color. Use [0, 0, 0] to extinguish the rear ring. Sends no global
+    power command; turn the device on first. Firmware may couple front and
+    rear modes. Segment state cannot be read back over the basic LAN API.
+  target:
+    entity:
+      domain: light
+      integration: govee_lan
+  fields:
+    color:
+      name: Color
+      description: Three integer RGB channels, each from 0 to 255.
+      required: true
+      example: [255, 110, 84]
+      selector:
+        object:
+
+set_segment_colors:
+  name: Set segment colors
+  description: >
+    Experimental H60A1 LAN control. Set one or more rear RGBIC color groups.
+    Segment numbers are 1 through 13. Each segment may appear only once.
+    Unlisted segments are not addressed. Sends no global power command;
+    turn the device on first. Not supported on H6022.
+  target:
+    entity:
+      domain: light
+      integration: govee_lan
+  fields:
+    groups:
+      name: Segment groups
+      description: List of groups with segments (1-13) and color ([R, G, B]).
+      required: true
+      example: >
+        [{"segments": [1, 2, 3], "color": [255, 0, 0]},
+         {"segments": [12, 13], "color": [0, 0, 255]}]
+      selector:
+        object:
+
 set_simple_scene:
   name: Set simple scene
   description: >
@@ -231,5 +273,53 @@ delete_matrix_scene:
       description: Exact preset name to delete.
       required: true
       example: "My Pixel Scene"
+      selector:
+        text:
+
+save_backlight_scene:
+  name: Save rear scene
+  description: Save 13 static rear RGB colors as a shared H60A1 scene and light effect. Reusing a name replaces that scene. Does not send a device command.
+  target:
+    entity:
+      domain: light
+      integration: govee_lan
+  fields:
+    name:
+      name: Name
+      required: true
+      selector:
+        text:
+    colors:
+      name: Segment colors
+      description: Exactly 13 [R, G, B] entries, ordered from segment 1 through 13.
+      required: true
+      selector:
+        object:
+
+delete_backlight_scene:
+  name: Delete rear scene
+  description: Remove a shared H60A1 custom rear scene. Does not change the light output.
+  target:
+    entity:
+      domain: light
+      integration: govee_lan
+  fields:
+    name:
+      name: Name
+      required: true
+      selector:
+        text:
+
+set_backlight_scene:
+  name: Apply rear scene
+  description: Apply a saved H60A1 rear scene by name without a global power command. Turn the light on first.
+  target:
+    entity:
+      domain: light
+      integration: govee_lan
+  fields:
+    name:
+      name: Name
+      required: true
       selector:
         text:

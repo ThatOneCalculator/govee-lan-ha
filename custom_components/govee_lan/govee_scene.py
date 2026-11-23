@@ -51,6 +51,10 @@ _SCENE_PROFILES: dict[str, dict] = {
 }
 _SCENE_PROFILES.update(
     {
+        # H60A1 catalogue sceneType=2: A3 subtype 0x02 followed by the
+        # unmodified scenceParam body. Cross-checked against ha-govee-led-ble's
+        # native_scene_upload_route + fragment_a3 and govee2mqtt SetSceneCode.
+        "H60A1": _GENERIC_SCENE_PROFILE,
         "H610A": {
             "multi_prefix": 0xa3,
             "on_command": False,
