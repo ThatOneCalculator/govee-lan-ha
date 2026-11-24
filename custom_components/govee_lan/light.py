@@ -789,6 +789,11 @@ class GoveeLanLight(LightEntity):
                     await self._async_call_client(
                         "set_scene", scene["code"], scene["param"]
                     )
+                else:
+                    _LOGGER.warning(
+                        "Effect %r is not loaded for %s; no scene command sent",
+                        effect, self._log_label(),
+                    )
 
         if ATTR_RGB_COLOR in kwargs and not effect:
             await self._async_call_client("set_color", *kwargs[ATTR_RGB_COLOR])
@@ -954,6 +959,9 @@ class GoveeLanLight(LightEntity):
         confirm that firmware applied the command. Surface send/validation errors
         to automations instead of treating an unsuccessful action as success.
         """
+        _LOGGER.debug(
+            "Rear action %s for %s with data: %s", method, self._log_label(), value
+        )
         try:
             await self.hass.async_add_executor_job(getattr(self._client, method), value)
         except (GoveeLanError, OSError) as err:

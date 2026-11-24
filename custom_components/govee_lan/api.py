@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import json
+import logging
 import socket
 import threading
 import time
@@ -28,6 +29,7 @@ CLIENT_PORT = 4002
 CONTROL_PORT = 4003
 DISCOVER_TIMEOUT = 3
 _RECV_LOCK = threading.Lock()
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -273,14 +275,17 @@ class GoveeLanClient:
 
     def set_scene(self, scene_code: int, scene_param: str) -> None:
         """Activate a scene by code and encoded parameter blob."""
+        commands = _scene_packets(self.sku, scene_code, scene_param)
+        _LOGGER.debug(
+            "Encoded scene SKU=%s code=%s parameter=%s frames=%s",
+            self.sku, scene_code, bool(scene_param), len(commands),
+        )
         self._send(
             {
                 "msg": {
                     "cmd": "ptReal",
                     "data": {
-                        "command": _scene_packets(
-                            self.sku, scene_code, scene_param
-                        )
+                        "command": commands
                     },
                 }
             }
@@ -288,8 +293,16 @@ class GoveeLanClient:
 
     def _send(self, command: dict) -> None:
         payload = json.dumps(command).encode()
+        _LOGGER.debug(
+            "Sending LAN UDP SKU=%s to %s:%s payload=%s",
+            self.sku, self.host, CONTROL_PORT, payload.decode(),
+        )
         with _make_socket() as sock:
-            sock.sendto(payload, (self.host, CONTROL_PORT))
+            sent = sock.sendto(payload, (self.host, CONTROL_PORT))
+        _LOGGER.debug(
+            "LAN UDP send completed SKU=%s bytes=%s (no device acknowledgement)",
+            self.sku, sent,
+        )
 
     def _send_recv(self, command: dict, timeout: float = 3.0) -> dict | None:
         with _RECV_LOCK:
