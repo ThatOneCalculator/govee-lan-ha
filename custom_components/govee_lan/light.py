@@ -21,7 +21,7 @@ from homeassistant.components.light import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
@@ -230,6 +230,9 @@ async def async_setup_entry(
     async_add_entities([GoveeLanLight(entry.runtime_data, entry)], False)
 
     platform = async_get_current_platform()
+    platform.async_register_entity_service(
+        "probe_lan", {}, "async_probe_lan", supports_response=SupportsResponse.ONLY
+    )
     platform.async_register_entity_service(
         "set_backlight",
         {vol.Required("color"): _SEGMENT_RGB_SCHEMA},
@@ -968,6 +971,15 @@ class GoveeLanLight(LightEntity):
             raise HomeAssistantError(str(err)) from err
         self._attr_effect = None
         self.async_write_ha_state()
+
+    async def async_probe_lan(self) -> dict:
+        """Return documented LAN identity versions and basic state without writes."""
+        try:
+            return await self.hass.async_add_executor_job(self._client.probe_lan)
+        except OSError as err:
+            raise HomeAssistantError(
+                f"Could not listen for LAN replies on UDP 4002: {err}"
+            ) from err
 
     async def async_set_backlight(self, color: list[int]) -> None:
         """Request one color on all H60A1 rear segments, including black for off."""

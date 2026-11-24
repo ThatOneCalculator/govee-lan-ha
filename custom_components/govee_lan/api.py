@@ -43,9 +43,18 @@ class GoveeDevice:
 
 def _make_socket(bind_port: int | None = None) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    if bind_port:
-        sock.bind(("", bind_port))
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if bind_port:
+            sock.bind(("", bind_port))
+        if bind_port == CLIENT_PORT:
+            # Govee's WLAN guide requires the client to join this group.
+            # Binding :4002 alone receives unicast but misses multicast replies.
+            membership = socket.inet_aton(MULTICAST_ADDR) + socket.inet_aton("0.0.0.0")
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+    except OSError:
+        sock.close()
+        raise
     return sock
 
 
@@ -139,6 +148,60 @@ class GoveeLanClient:
         if resp:
             return resp.get("msg", {}).get("data")
         return None
+
+    def probe_lan(self, timeout: float = 3.0) -> dict:
+        """Read documented scan/status replies, including separate Wi-Fi versions.
+
+        Unicast targets this device only. No control command is sent, and only
+        allowlisted fields are returned; MAC/device IDs are not included.
+        """
+        result = {"sku": self.sku, "scan_received": False, "status_received": False}
+        with _RECV_LOCK:
+            with _make_socket(CLIENT_PORT) as recv_sock, _make_socket() as send_sock:
+                requests = [
+                    ("scan", {"account_topic": "reserve"}, SCAN_PORT),
+                    ("devStatus", {}, CONTROL_PORT),
+                ]
+                for cmd, data, port in requests:
+                    send_sock.sendto(
+                        json.dumps({"msg": {"cmd": cmd, "data": data}}).encode(),
+                        (self.host, port),
+                    )
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    recv_sock.settimeout(max(0.01, deadline - time.monotonic()))
+                    try:
+                        raw, addr = recv_sock.recvfrom(4096)
+                    except TimeoutError:
+                        break
+                    if addr[0] != self.host:
+                        continue
+                    try:
+                        msg = json.loads(raw)["msg"]
+                        data = msg["data"]
+                        if not isinstance(data, dict):
+                            continue
+                        if msg.get("cmd") == "scan":
+                            result["scan_received"] = True
+                            result["versions"] = {
+                                key: data[key] for key in (
+                                    "bleVersionHard", "bleVersionSoft",
+                                    "wifiVersionHard", "wifiVersionSoft",
+                                ) if isinstance(data.get(key), str)
+                            }
+                        elif msg.get("cmd") == "devStatus":
+                            result["status_received"] = True
+                            result["status"] = {
+                                key: data[key] for key in (
+                                    "onOff", "brightness", "color", "colorTemInKelvin"
+                                ) if key in data
+                            }
+                    except (KeyError, TypeError, AttributeError, json.JSONDecodeError):
+                        continue
+                    if result["scan_received"] and result["status_received"]:
+                        break
+        _LOGGER.debug("Read-only LAN probe SKU=%s result=%s", self.sku, result)
+        return result
 
     def set_segment_colors(self, groups: list[dict]) -> None:
         """Set selected rear RGBIC segments without issuing global commands."""
@@ -322,7 +385,13 @@ class GoveeLanClient:
                         return None
                     if addr[0] != self.host:
                         continue
-                    return json.loads(data)
+                    response = json.loads(data)
+                    if not isinstance(response, dict):
+                        continue
+                    msg = response.get("msg")
+                    if not isinstance(msg, dict) or msg.get("cmd") != command["msg"]["cmd"]:
+                        continue
+                    return response
                 return None
             except json.JSONDecodeError:
                 return None

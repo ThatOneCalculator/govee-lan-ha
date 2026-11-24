@@ -1,3 +1,14 @@
+probe_lan:
+  name: Read LAN diagnostics
+  description: >
+    Send documented unicast scan and status queries to the selected device.
+    Returns Bluetooth and Wi-Fi firmware/hardware versions when provided by
+    the lamp. Does not change power, colors, brightness, or effects.
+  target:
+    entity:
+      domain: light
+      integration: govee_lan
+
 set_backlight:
   name: Set backlight
   description: >

@@ -5,9 +5,63 @@ Implemented for the regular **H60A1**, with 13 rear RGBIC segments and the
 This is a LAN integration; no Bluetooth pairing, cloud account, or API key is
 added. H6022 scene, music, matrix, and ordinary light control paths are retained.
 
+## Observed device result
+
+On 2026-11-23, the user tested an H60A1 reporting firmware **1.02.20** (hardware
+revision not yet supplied). Standard LAN color and brightness worked. Selecting
+Dreamlike sent its six expected frames, but the user reported no visible effect.
+The card's Fill all → Apply colors also had no visible effect. Logs show the
+backend received the action and sent one rear-color frame after a long idle
+period, followed by additional attempts. The first isolated failure is not
+explained by an upload spanning multiple packets or by an immediately preceding
+power command from this integration.
+
+The logged Dreamlike frames match the bundled encoder byte-for-byte, are each
+20 bytes, and have valid XOR checksums. The rear command uses mask `ff 1f` and
+also has a valid checksum. These are framing checks, not evidence that the
+device implements or accepts this LAN transport. No acknowledgement is provided.
+
+Conclusion: **this integration's current `ptReal` route is not working on that
+tested device**. This does not establish that every H60A1 revision rejects it,
+nor does it identify a working alternative LAN envelope. The successful
+[firmware 1.02.20 report](https://github.com/teh-hippo/ha-govee-led-ble/issues/340)
+uses encrypted BLE through an ESPHome Bluetooth proxy, not LAN. The
+[govee2mqtt H60A1 scene report](https://github.com/wez/govee2mqtt/issues/354)
+also records normal controls working while LAN scenes do nothing; the original
+fix reverted preferring LAN scene control. BLE support must not be treated as
+proof of raw-over-LAN support.
+
+The browser widget and static command encoding remain available for experimental
+testing. There is no Bluetooth or cloud fallback in this integration. A future
+fallback needs an explicitly implemented transport and device acceptance tests.
+
 ## Evidence
 
 Inspected on 2026-11-23:
+
+### Direct review of Govee's documentation
+
+The [official WLAN guide](https://app-h5.govee.com/user-manual/wlan-guide)
+currently lists H60A1. It specifies joining multicast group `239.255.255.250`,
+scan requests on UDP 4001, reply reception on 4002, and control on 4003. The
+documented control commands are `turn`, `brightness`, `colorwc`, and `devStatus`.
+It does not specify scene or per-segment commands. Its scan reply identifies
+Bluetooth and Wi-Fi software/hardware versions separately.
+
+This review found a real client defect: reply sockets were bound to port 4002
+without joining the multicast group. Version 0.1.6 joins that group and filters
+status replies by command so a scan reply cannot masquerade as device state.
+These receive-path fixes do not establish that the device accepts `ptReal`.
+
+The read-only `govee_lan.probe_lan` action sends unicast scan/status queries to
+one selected device and returns allowlisted version/state fields. It does not
+send controls, enumerate other devices, or return MAC/device identifiers.
+
+Govee's separate [Developer Platform control reference](https://developer.govee.com/reference/control-you-devices)
+describes ceiling-light toggles and segmented controls through its authenticated
+HTTPS API. Those request schemas are not documented LAN command envelopes.
+
+### Implementation and capture evidence
 
 - [Govee LAN guide](https://app-h5.govee.com/user-manual/wlan-guide): basic
   scan/control/status API on UDP 4001/4003/4002. The basic `colorwc` command
@@ -74,8 +128,9 @@ Validation completes before sending anything. Numbers exposed in actions are
 
 The actions send no global `turn`, `colorwc`, or `brightness` command. Thus the
 implementation does not intentionally change the front panel or global power.
-Actual front-panel preservation, segment geometry, black-as-off behavior,
-batched-command handling, and scene switching remain **unverified on hardware**.
+Actual front-panel preservation, segment geometry, black-as-off behavior, and
+batched-command handling have not been validated. Current scene and rear-color
+commands failed the device test described above.
 The basic status response has no segment color/state readback. The light's main
 RGB/brightness/power state is not replaced with invented rear-segment state.
 UDP send success is not an acknowledgement from the lamp.

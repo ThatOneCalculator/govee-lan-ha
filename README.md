@@ -18,7 +18,7 @@ should work fine.
 - H6022: Sound-reactive effects for supported models, including music visualiser modes
 - H6022: Custom matrix scenes (animated, layers)
 - H60A1: Experimental rear RGBIC actions for all 13 segments or selected groups
-- H60A1: Full offline Govee scene library (79 variants) and a ceiling scene/editor card
+- H60A1: Experimental offline Govee scene library (79 variants) and a ceiling scene/editor card
 
 ## Install
 
@@ -75,6 +75,29 @@ Scene effects are available through the light entity's effect dropdown, grouped 
 | `Matrix:` | Custom multi-layer animated scenes you've designed |
 
 ## H60A1 rear RGBIC backlight
+
+**Device testing update:** On an H60A1 reporting firmware **1.02.20**, a user
+confirmed basic LAN color/brightness control works, while both scene uploads
+and isolated single-frame rear-color commands have no visible effect. The card
+does reach the backend and UDP sends complete. This implementation's `ptReal`
+route is therefore not working on that tested device. Correct packet framing
+and mock tests do not establish device support. See the
+[observed result and Bluetooth evidence](docs/h60a1-protocol.md#observed-device-result).
+
+For LAN investigation, version 0.1.6 adds a read-only diagnostic action and fixes
+the reply socket's missing multicast-group membership. In Developer Tools →
+Actions, run this against your **Govee LAN** light and copy the response:
+
+```yaml
+action: govee_lan.probe_lan
+target:
+  entity_id: light.ceiling_light
+```
+
+The response distinguishes `bleVersionSoft` from `wifiVersionSoft` (and their
+hardware versions). No power/color command is sent. A missing response is not
+proof of unsupported controls; UDP 4002 reception or another listener may be
+involved. This receive fix has not been shown to fix H60A1 scenes or rear colors.
 
 The regular H60A1 ceiling light exposes **13 rear RGBIC segments**. Use the
 following actions on its **Govee LAN** light entity. They send model-scoped
